@@ -1,0 +1,37 @@
+#!/bin/bash
+# Bootstrap des instances web ${project_name} (${environment}).
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y nginx awscli curl
+
+# Lecture du secret dans Parameter Store via le profil d'instance.
+# La valeur n'est jamais affichee ni ecrite sur disque : on verifie seulement sa presence.
+if SECRET=$(aws ssm get-parameter --region "${aws_region}" --name "${ssm_parameter_name}" \
+  --with-decryption --query Parameter.Value --output text 2>/dev/null) && [ -n "$SECRET" ]; then
+  SECRET_STATUS="lu depuis Parameter Store"
+else
+  SECRET_STATUS="ERREUR : lecture impossible"
+fi
+unset SECRET
+
+# Metadonnees de l'instance (IMDSv2)
+TOKEN=$(curl -sS -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+INSTANCE_ID=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+AZ=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+cat > /var/www/html/index.html <<HTML
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>${project_name} - ${environment}</title></head>
+<body>
+  <h1>${project_name} - ${environment}</h1>
+  <p>Domaine : ${domain_name}</p>
+  <p>Instance : $INSTANCE_ID ($AZ)</p>
+  <p>Secret applicatif : $SECRET_STATUS</p>
+</body>
+</html>
+HTML
+
+systemctl enable --now nginx
